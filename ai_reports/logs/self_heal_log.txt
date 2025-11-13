@@ -1,0 +1,9 @@
+[2025-11-10 10:04:47] Action: wait_for_selector | Old: input[aria-label='Search Product'] | New: #search_product | Status: CACHE_USED
+[2025-11-10 10:05:26] Action: fill | Old: input[type='search'] | New: #search_product | Status: HEALED_AND_RETRIED
+[2025-11-10 10:05:26] Action: fill | Old: input[type='search'] | New: #search_product | Status: HEAL_SUCCESS_ATTEMPT_1
+[2025-11-10 10:05:31] Action: click | Old: button:has-text('Search') | New: #submit_search | Status: CACHE_USED
+[2025-11-10 10:05:51] Action: wait_for_selector | Old: section.searched-products | New: section:has-text("All Products") | Status: CACHE_USED
+[2025-11-10 10:15:16] Action: click | Old: [aria-label='Search'] | New: #submit_search | Status: CACHE_USED
+[2025-11-10 10:15:31] Action: wait_for_selector | Old: section.search-results-section | New: .search-results-section | Status: CACHE_USED
+[2025-11-10 10:16:22] Action: wait_for_selector | Old: .search-results-section | New: section:has-text("Search Results") | Status: HEALED_AND_RETRIED
+[2025-11-10 10:17:57] Action: wait_for_selector | Old: .search-results-section | New: section:has-text("Search Results") | Status: HEAL_FAILED_AFTER_RETRIES

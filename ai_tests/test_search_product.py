@@ -9,13 +9,15 @@ async def main():
     playwright, browser, context, page, video_dir = await get_browser(headless=True)
     log_info("🔹 Starting AI-driven Search Product Test")
 
-    task = f"""
+    task = f""" 
     1. Open {os.environ.get("BASE_URL")}
-    2. Click 'Products' link in header
-    3. Verify there is a search box with label 'Search Product'
-    4. Type 'T-shirt' in the search input
-    5. Click the search button
-    6. Verify the searched products section is visible
+    2. Verify there is a search input box with place holder 'Search Product'
+    3. Verify user is navigated to All Products page successfully by checking that the url matches {os.environ.get("BASE_URL")}
+    4. Verify that the number of products populated in the page equals 34, you can get the count by checking the number of 'View Product' anchor tags in the page
+    5. Get all product names from <p> tags that are above the ‘Add to cart’ anchor tags, randomly select one, and enter it in the Search Product field.
+    6. Click the search button
+    7. Verify that user is navigated to Searched Products page
+    8. Check that search results displayed in the page are matching with the product name that we entered in the 'Search Product' input field 
     """
 
     agent = AIAgent(task, page)

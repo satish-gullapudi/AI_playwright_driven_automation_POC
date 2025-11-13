@@ -72,8 +72,6 @@ This framework brings **intelligence, adaptability, and speed** to traditional U
 ### 🧩 1. Install Dependencies
 ```bash
 pip install -r requirements.txt
-playwright install
-playwright install ffmpeg
 ```
 🔑 2. Configure Gemini API Key
 
