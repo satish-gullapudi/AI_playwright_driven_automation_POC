@@ -4,7 +4,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # --- Load environment variables ---
-env_path = os.path.join(Path.cwd(), "secrets.env")
+root_dir = Path(__file__).resolve().parent.parent.parent
+env_path = os.path.join(root_dir, "secrets.env")
 load_dotenv(dotenv_path=env_path, override=True)
 
 
