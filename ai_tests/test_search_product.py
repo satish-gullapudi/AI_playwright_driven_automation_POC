@@ -1,38 +1,30 @@
-import asyncio
 import os
-
-from ai_core.ai_browser import get_browser
 from ai_core.ai_agent import AIAgent
-from ai_core.ai_logger import log_info
+from ai_core.ai_model import GEMINI_MODEL
+from ai_core.ai_logger import log_info, log_error
 
-async def main():
-    playwright, browser, context, page, video_dir = await get_browser(headless=True)
+def test_search_product_flow(setup):
+    """
+    Synchronous pytest test that uses the AIAgent to run steps.
+    """
     log_info("🔹 Starting AI-driven Search Product Test")
-
+    page = setup
     task = f""" 
-    1. Open {os.environ.get("BASE_URL")}
-    2. Verify there is a search input box with place holder 'Search Product'
-    3. Verify user is navigated to All Products page successfully by checking that the url matches {os.environ.get("BASE_URL")}
-    4. Verify that the number of products populated in the page equals 34, you can get the count by checking the number of 'View Product' anchor tags in the page
-    5. Get all product names from <p> tags that are above the ‘Add to cart’ anchor tags, randomly select one, and enter it in the Search Product field.
-    6. Click the search button
-    7. Verify that user is navigated to Searched Products page
-    8. Check that search results displayed in the page are matching with the product name that we entered in the 'Search Product' input field 
+    1. Open website {os.environ.get("BASE_URL")} 
+    2. Click 'Products' link in header and wait for the page to load
+    3. Verify user is navigated to All Products page successfully by checking that the url matches {os.environ.get("BASE_URL")}products
+    4. Verify there is a search input box with place holder 'Search Product'
+    5. Verify that the number of products populated in the page equals 34, you can get the count by checking the number of 'View Product' anchor tags in the page
+    6. Get all product names from <p> tags that are above the ‘Add to cart’ anchor tags, randomly select one, and then enter it in the Search Product field.
+    7. Click the search button next to 'Search Product' input field
+    8. Verify that user is navigated to 'Searched Products' page
+    9. Fetch the text from 'Search Product' input field and verify that the products under the 'Searched Products' are matching with the fetched text
     """
 
-    agent = AIAgent(task, page)
+    agent = AIAgent(task, page, GEMINI_MODEL)
 
     try:
-        await agent.run()
+        agent.run()
         log_info("✅ Test completed successfully.")
     except Exception as e:
-        log_info(f"❌ Test failed: {e}")
-    finally:
-        await asyncio.sleep(5)
-        await context.close()
-        await browser.close()
-        await playwright.stop()
-        log_info(f"🎥 Video saved in: {video_dir}")
-
-if __name__ == "__main__":
-    asyncio.run(main())
+        log_error(f"❌ Test failed: {e}")

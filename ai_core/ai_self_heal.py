@@ -1,147 +1,159 @@
-from datetime import datetime
-import inspect
-import asyncio
 import os
 import json
-from playwright.async_api import Error as PlaywrightError
-from ai_core.ai_model import GEMINI_MODEL
+import time
+from datetime import datetime
+from playwright.sync_api import Error as PlaywrightError
+from ai_core.ai_logger import log_info, log_error
 
-# 🔧 Retry configuration
-MAX_HEAL_RETRIES = 2          # number of retries for healed locator
-HEAL_RETRY_DELAY = 1.5        # seconds between retries
-
+# Config
+MAX_HEAL_RETRIES = 2
+HEAL_RETRY_DELAY = 1.5
 CACHE_FILE = os.path.join("ai_reports", "self_heal_cache.json")
-
 SELF_HEAL_LOG = os.path.join("ai_reports", "logs", "self_heal_log.txt")
 os.makedirs(os.path.dirname(SELF_HEAL_LOG), exist_ok=True)
 
 # -------------------------
-# 🔹 Cache Helpers
+# Cache helpers
 # -------------------------
 def load_cache():
     if os.path.exists(CACHE_FILE):
         try:
             with open(CACHE_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except json.JSONDecodeError:
+        except Exception:
             return {}
     return {}
 
 def save_cache(cache_data):
     os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
     with open(CACHE_FILE, "w", encoding="utf-8") as f:
-        json.dump(cache_data, f, indent=4)
+        json.dump(cache_data, f, indent=2)
 
 def log_healing_event(old_locator, new_locator, action, status):
-    """
-    Log every healing attempt with timestamp, locator info, and result.
-    """
     os.makedirs(os.path.dirname(SELF_HEAL_LOG), exist_ok=True)
     with open(SELF_HEAL_LOG, "a", encoding="utf-8") as log:
-        log.write(
-            f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
-            f"Action: {action} | "
-            f"Old: {old_locator} | "
-            f"New: {new_locator} | "
-            f"Status: {status}\n"
-        )
+        log.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Action: {action} | Old: {old_locator} | New: {new_locator} | Status: {status}\n")
 
 # -------------------------
-# 🔹 Healing Core
+# Healing core
 # -------------------------
-async def heal_locator(page, failed_locator, action, context_html):
+def heal_locator(page, failed_locator, action, context_html, model):
     """
-    Ask Gemini to suggest an alternative selector when an element isn't found.
+    Ask the LLM synchronously to propose an alternative selector.
+    Returns new_locator (string) or None.
     """
-    prompt = f"""
-    You are an expert Playwright automation engineer.
-    The following locator failed during a test:
-    - Action: {action}
-    - Locator: "{failed_locator}"
-
-    Below is the relevant HTML snippet of the page:
-    {context_html[:3000]}
-
-    Suggest a single best alternative selector for the same element.
-    Return only the selector (no markdown, no code fences, no comments).
-    """
-
     try:
-        response = GEMINI_MODEL.generate_content(prompt)
-        new_locator = response.text.strip().replace("```", "").strip()
-        print(f"[Self-Heal] 🤖 Suggested new locator → {new_locator}")
+        prompt = f"""
+            You are an expert Playwright automation engineer.
+            A locator failed during automation:
+            - Action: {action}
+            - Locator: "{failed_locator}"
+            Below is a snippet of the page HTML (truncated):
+            {context_html[:4000]}
+            
+            Suggest one best CSS or XPath selector (only the selector string in plain text). Do NOT include markdown or code fences.
+            """
+        resp = model.generate_content(prompt)
+        new_locator = getattr(resp, "text", "") or str(resp)
+        new_locator = new_locator.strip().replace("```", "").strip()
+        if not new_locator:
+            return None
+        log_info(f"[Self-Heal] AI suggested locator: {new_locator}")
         return new_locator
     except Exception as e:
-        print(f"[Self-Heal] ❌ AI healing failed: {e}")
+        log_error(f"[Self-Heal] heal_locator failed: {e}")
         return None
 
 # -------------------------
-# 🔹 Healing Wrapper
+# Universal try_with_healing wrapper
 # -------------------------
-async def try_with_healing(page, action_func, locator, *args, retries=1, **kwargs):
+def try_with_healing(model, page, action_func, *args, retries: int = 1, **kwargs):
     """
-    Wraps Playwright actions with self-healing retry logic.
-    Handles both async and sync functions (like get_by_label).
-    Supports positional + keyword args (including AI dicts/lists).
+    Universal wrapper for Playwright actions:
+    - Supports navigation-style actions (page.goto(url))
+    - Supports locator-based actions (page.click(selector))
+    - Performs self-healing when locator-based actions fail
+    - Accepts both bound methods (page.click) and callables
+    - Defensive checks and limited auto-correction for misplaced args
     """
-    cache = load_cache()
+    # Defensive auto-correction: if args look swapped (model was passed as page), attempt quick fix
+    if hasattr(model, "locator") and (not hasattr(page, "locator")):
+        # model looks like a Page and page looks like a Model -> swap
+        log_info("[Self-Heal] Detected swapped 'model' and 'page' arguments. Auto-correcting.")
+        model, page = page, model
 
-    # 🔍 Fix for AI-generated [{"state": "visible"}] style arguments
-    if args and isinstance(args[0], (dict, list)):
-        maybe_kwargs = args[0]
-        if isinstance(maybe_kwargs, list) and maybe_kwargs and isinstance(maybe_kwargs[0], dict):
-            maybe_kwargs = maybe_kwargs[0]
-        if isinstance(maybe_kwargs, dict):
-            kwargs.update(maybe_kwargs)
-            args = args[1:]  # remove that dict from positional args
-            print(f"[Self-Heal] 🧠 Converted AI-style arguments into keyword args: {kwargs}")
+    # Validate action_func
+    if not callable(action_func):
+        raise ValueError(f"action_func={action_func!r} is not callable. Correct usage: try_with_healing(model, page, page.click, locator)")
 
-    # ♻️ Use cached locator if available
-    if locator in cache:
-        healed_locator = cache[locator]
-        print(f"[Self-Heal] ♻️ Using cached healed locator: {healed_locator}")
-        log_healing_event(locator, healed_locator, action_func.__name__, "CACHE_USED")
-        locator = healed_locator
-
-    for attempt in range(retries + 1):
+    # No args => call directly (e.g., page.reload())
+    if len(args) == 0:
         try:
-            # 🧩 Detect whether action_func is async or sync
-            if inspect.iscoroutinefunction(action_func):
-                result = await action_func(locator, *args, **kwargs)
-            else:
-                result = action_func(locator, *args, **kwargs)
+            return action_func(**kwargs) if kwargs else action_func()
+        except Exception as e:
+            log_error(f"[Self-Heal] Action failed with no-arg call: {e}")
+            raise
 
-            return result
+    first = args[0]
 
+    # If first arg is a URL => treat as navigation
+    if isinstance(first, str) and (first.startswith("http://") or first.startswith("https://")):
+        try:
+            return action_func(first, *args[1:], **kwargs)
+        except Exception as e:
+            log_error(f"[Self-Heal] Navigation action failed: {e}")
+            raise
+
+    # At this point we assume it's locator-based
+    locator = first
+    remaining = args[1:]
+
+    cache = load_cache()
+    if isinstance(locator, str) and locator in cache:
+        healed = cache[locator]
+        log_info(f"[Self-Heal] Using cached healed locator: {healed}")
+        locator = healed
+
+    attempt = 0
+    while attempt <= retries:
+        attempt += 1
+        try:
+            # call action_func with locator as first arg
+            return action_func(locator, *remaining, **kwargs)
         except PlaywrightError as e:
-            print(f"[Self-Heal] ⚠️ Locator failed: {locator}")
-            context_html = await page.content()
+            log_info(f"[Self-Heal] Locator action failed (attempt {attempt}/{retries+1}): {locator} | err: {e}")
+            # try to heal
+            try:
+                html = page.content()
+            except Exception as ex:
+                html = ""
+                log_info(f"[Self-Heal] Could not get page.html for healing: {ex}")
 
-            # Ask Gemini for alternative locator
-            new_locator = await heal_locator(page, locator, action_func.__name__, context_html)
+            new_locator = heal_locator(page, locator, getattr(action_func, "__name__", "action"), html, model)
             if not new_locator or new_locator == locator:
-                log_healing_event(locator, "-", action_func.__name__, "FAILED_NO_SUGGESTION")
-                print("[Self-Heal] ❌ No valid alternative found. Test will fail.")
+                log_healing_event(locator, "-", getattr(action_func, "__name__", "action"), "FAILED_NO_SUGGESTION")
+                log_error("[Self-Heal] No alternative found; re-raising original error.")
                 raise
 
-            # Save to cache
+            # cache and retry healed locator
             cache[locator] = new_locator
             save_cache(cache)
-            log_healing_event(locator, new_locator, action_func.__name__, "HEALED_AND_RETRIED")
-            print(f"[Self-Heal] ✅ Cached new locator: {locator} → {new_locator}")
+            log_healing_event(locator, new_locator, getattr(action_func, "__name__", "action"), "HEALED_AND_RETRIED")
+            log_info(f"[Self-Heal] Retrying with healed locator: {new_locator}")
 
-            # 🔁 Retry loop for healed locator
-            for heal_try in range(1, MAX_HEAL_RETRIES + 1):
+            # attempt healed retries
+            heal_try = 0
+            while heal_try < MAX_HEAL_RETRIES:
                 try:
-                    print(f"[Self-Heal] 🔁 Retrying healed locator (Attempt {heal_try}/{MAX_HEAL_RETRIES})")
-                    if inspect.iscoroutinefunction(action_func):
-                        return await action_func(new_locator, *args, **kwargs)
-                    else:
-                        return action_func(new_locator, *args, **kwargs)
-                except PlaywrightError:
-                    print(f"[Self-Heal] ⏳ Retrying in {HEAL_RETRY_DELAY}s...")
-                    await asyncio.sleep(HEAL_RETRY_DELAY)
+                    return action_func(new_locator, *remaining, **kwargs)
+                except PlaywrightError as e2:
+                    heal_try += 1
+                    log_info(f"[Self-Heal] Healed attempt {heal_try}/{MAX_HEAL_RETRIES} failed; sleeping {HEAL_RETRY_DELAY}s")
+                    time.sleep(HEAL_RETRY_DELAY)
 
-            log_healing_event(locator, new_locator, action_func.__name__, "HEAL_FAILED_AFTER_RETRIES")
-            print(f"[Self-Heal] ❌ Healed locator still failed after {MAX_HEAL_RETRIES} retries.")
+            log_healing_event(locator, new_locator, getattr(action_func, "__name__", "action"), "HEAL_FAILED_AFTER_RETRIES")
+            log_error("[Self-Heal] Healed locator failed after retries; raising.")
             raise
+
+    # If we exit loop unexpectedly
+    raise PlaywrightError(f"Action failed for locator {locator} after {retries} retries.")
