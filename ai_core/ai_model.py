@@ -1,11 +1,9 @@
 import google.generativeai as genai
 import os
-from pathlib import Path
 from dotenv import load_dotenv
 
 # --- Load environment variables ---
-root_dir = Path(__file__).resolve().parent.parent.parent
-env_path = os.path.join(root_dir, "secrets.env")
+env_path = "secrets.env"
 load_dotenv(dotenv_path=env_path, override=True)
 
 

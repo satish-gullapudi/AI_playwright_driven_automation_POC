@@ -1,12 +1,13 @@
-# AI_automation_framework/ai_core/ai_agent.py
 import os
 import re
 import random
-import textwrap
-import inspect
+import traceback
+
 import allure
 from allure_commons.types import AttachmentType
+
 from playwright.sync_api import expect
+
 from ai_core.ai_self_heal import try_with_healing, heal_locator
 from ai_core.ai_logger import log_info, log_error
 
@@ -39,82 +40,75 @@ def remove_async_tokens(code: str) -> str:
     return code
 
 def sanitize_assertions(code: str) -> str:
-    """Fix common hallucinated assertion method names to valid Playwright ones."""
+    """Fix common hallucinated assertion method names to valid Playwright ones.
+    Only touch method names that start with 'to_' to avoid rewriting arbitrary methods.
+    """
     for pattern, repl in ASSERTION_REPLACEMENTS.items():
         code = re.sub(pattern, repl, code)
-    # Final safety: if any unknown 'to_' method is present, try to map to to_be_visible or remove
+
+    # Only transform methods that look like assertion calls (start with 'to_')
     def _check_unknown(match):
         name = match.group(1)
         if name not in ALLOWED_ASSERTIONS:
-            # fallback to to_be_visible or remove parentheses if already has args
-            return "to_be_visible"
+            # fallback only if it's an assertion-like name (starts with to_)
+            if name.startswith("to_"):
+                return "to_be_visible"
+            # otherwise leave it unchanged
+            return name
         return name
-    code = re.sub(r"\.([a-zA-Z_0-9]+)\s*\(", lambda m: f".{_check_unknown(m)}(", code)
+
+    code = re.sub(r"\.(to_[a-zA-Z_0-9]+)\s*\(", lambda m: f".{_check_unknown(m)}(", code)
     return code
 
 def fix_try_with_healing_signature(code: str) -> str:
     """
-    Auto-correct common argument-order mistakes for try_with_healing produced by LLM.
-    - Ensure calls look like: try_with_healing(model, page, page.click, "selector", ...)
-    - If the call starts with try_with_healing(page, page.click, ...), swap to model,page
-    - If the call is try_with_healing(page.click, "selector"), add model and page
+    Conservative fixes for common argument-order mistakes for try_with_healing.
+    Only apply a couple of safe, specific transformations to avoid double-fixing.
     """
-    # Pattern 1: try_with_healing(page, page.click, ...)
+    # If someone wrote: try_with_healing(page, page.click, ...)
     code = re.sub(
         r"try_with_healing\s*\(\s*page\s*,\s*(page\.[A-Za-z_0-9]+)",
         r"try_with_healing(model, page, \1",
         code
     )
 
-    # Pattern 2: try_with_healing(page.click, "selector", ...)
+    # If someone wrote: try_with_healing(page.click, "selector", ...)
+    # (i.e. first arg is a bound method) -> insert model,page only if model is missing
     code = re.sub(
         r"try_with_healing\s*\(\s*(page\.[A-Za-z_0-9]+)\s*,",
         r"try_with_healing(model, page, \1,",
         code
     )
 
-    # Pattern 3: try_with_healing\(page, "http..."\) -> navigation form -> fix to model,page, page.goto
-    code = re.sub(
-        r"try_with_healing\s*\(\s*page\s*,\s*([\"']https?://[^\"']+[\"'])\s*\)",
-        r"try_with_healing(model, page, page.goto, \1)",
-        code
-    )
-
+    # Avoid making changes in strings / comments by being conservative.
     return code
 
 def validate_final_code(code: str) -> str:
     """
     Final sanitization pipeline:
     - remove async/await
-    - fix try_with_healing signatures
+    - fix try_with_healing signatures (conservative)
     - sanitize assertions
+    - reliably convert page.to_be_visible("sel") forms to expect(page.locator(...)).to_be_visible()
     """
     code = remove_async_tokens(code)
     code = fix_try_with_healing_signature(code)
     code = sanitize_assertions(code)
 
-    # ---------------------------------------------------
-    # Fix hallucinations: page.to_be_visible("selector")
-    # ---------------------------------------------------
+    # Robustly convert page.to_be_visible("selector") and page.to_have_count('sel') etc.
+    # This regex matches both single and double quoted strings and tolerates whitespace.
     code = re.sub(
-        r"page\.to_be_visible\(\s*([\"'][^\"']+[\"'])\s*\)",
-        r"expect(page.locator(\1)).to_be_visible()",
-        code
+        r"page\.\s*(to_be_visible|to_have_count|to_have_text)\s*\(\s*([\"'])(.+?)\2\s*\)",
+        lambda m: (
+            "expect(page.locator(%s)).%s()" % (repr(m.group(2) + m.group(3) + m.group(2)), "to_be_visible")
+            if m.group(1) == "to_be_visible"
+            else ("expect(page.locator(%s)).to_have_count(1)" % repr(m.group(2) + m.group(3) + m.group(2)))
+        ),
+        code,
+        flags=re.DOTALL,
     )
 
-    # ---------------------------------------------------
-    # Fix hallucinations: page.to_have_count("selector")
-    # ---------------------------------------------------
-    code = re.sub(
-        r"page\.to_have_count\(\s*([\"'][^\"']+[\"'])\s*\)",
-        r"expect(page.locator(\1)).to_have_count(1)",
-        code
-    )
-
-    # ---------------------------------------------------
-    # Remove invalid assignments:
-    #   var = expect(...).to_be_visible()
-    # ---------------------------------------------------
+    # Remove invalid assignments like: var = expect(...).to_be_visible()
     code = re.sub(
         r"^[A-Za-z_][A-Za-z0-9_]*\s*=\s*expect\([^\)]+\)\.[^\n]+",
         lambda m: m.group(0).split("=", 1)[1].strip(),
@@ -122,12 +116,9 @@ def validate_final_code(code: str) -> str:
         flags=re.MULTILINE
     )
 
-    # ---------------------------------------------------
-    # Convert any pattern:
-    #   var = page.locator("x")
-    #   expect(var).to_be_visible()
-    # (These are OK — do not modify)
-    # ---------------------------------------------------
+    # REMOVE ANY IMPORT STATEMENTS — hallucinated modules break execution
+    code = re.sub(r"^\s*(import|from)\s+[^\n]+", "", code, flags=re.MULTILINE)
+
     return code
 
 # ----------------------------
@@ -251,6 +242,10 @@ Important rules:
 - DO NOT invent new assertion method names.
 - If you need to get text contents from many elements, use page.locator("<selector>").all_text_contents()
 - Return ONLY executable Python code (no markdown, no explanation, no comments).
+- DO NOT write any import statements.
+- DO NOT use any external modules.
+- DO NOT invent modules like 'playwright_healing_wrapper'.
+
 Step: "{step_text}"
 Note: If the step references the site root, assume base url is {base_url}
 """
@@ -292,6 +287,10 @@ Note: If the step references the site root, assume base url is {base_url}
             "__name__": "__ai_step__",
         }
 
+        if "import " in code_block or "from " in code_block:
+            log_error("[AIAgent] Illegal import detected in LLM output. Removing it.")
+            code_block = re.sub(r"^\s*(import|from)\s+[^\n]+", "", code_block, flags=re.MULTILINE)
+
         # Wrap the code into a function to keep locals clean and use allure.step
         wrapper = "def _run_step():\n"
         for line in code_block.splitlines():
@@ -300,19 +299,23 @@ Note: If the step references the site root, assume base url is {base_url}
         try:
             with allure.step(step_description):
                 exec(wrapper, exec_globals)
-                exec_globals["_run_step"]()
+                try:
+                    exec_globals["_run_step"]()
+                except Exception as e_exec:
+                    tb = traceback.format_exc()
+                    log_error(f"[AIAgent] Execution failed in AI-generated step: {e_exec}\n{tb}")
+                    # attach screenshot if possible
+                    try:
+                        allure.attach(self.page.screenshot(), name="failure", attachment_type=AttachmentType.PNG)
+                    except Exception:
+                        pass
+                    raise
                 try:
                     screenshot = self.page.screenshot()
                     allure.attach(screenshot, name="screenshot", attachment_type=AttachmentType.PNG)
                 except Exception:
-                    # non-fatal: continue
                     pass
         except Exception as e:
-            try:
-                allure.attach(self.page.screenshot(), name="failure", attachment_type=AttachmentType.PNG)
-            except Exception:
-                pass
-            log_error(f"[AIAgent] Execution failed: {e}")
             raise
 
     def run(self):
@@ -325,8 +328,13 @@ Note: If the step references the site root, assume base url is {base_url}
             log_info(f"[AI] → Playwright command (step {i}):\n{code}")
             # Detect common pattern where LLM directly collects names then random.choice([]). Replace with fallback wrapper
             if ".all_text_contents()" in code and "random.choice" in code:
-                # Ensure the code uses the fallback_locator_list helper to avoid empty sequence
-                code = re.sub(r"([A-Za-z0-9_.\[\]\"' >:-]+)\.all_text_contents\(\)", r"fallback_locator_list(r'\1')", code)
-                # Re-sanitize after regex edits
+                # Attempt to extract a page.locator("...").all_text_contents() pattern and replace it
+                m = re.search(r'page\.locator\(\s*([\'"])(.+?)\1\s*\)\.all_text_contents\(\)', code)
+                if m:
+                    selector = m.group(2)
+                    code = re.sub(r'page\.locator\(\s*([\'"])(.+?)\1\s*\)\.all_text_contents\(\)',
+                                  f"fallback_locator_list({repr(selector)})",
+                                  code)
+                # re-sanitize after changes
                 code = validate_final_code(code)
             self._wrap_and_execute(code, f"AI Step {i}: {desc}")
