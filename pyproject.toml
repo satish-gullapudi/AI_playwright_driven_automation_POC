@@ -11,6 +11,6 @@ description = "AI Playwright Automation POC"
 [tool.setuptools]
 # Use the Setuptools function to automatically find all directories
 # that contain an __init__.py file (like ai_core and ai_tests)
-packages = ["ai_core", "ai_tests"]
+packages = ["ai_core", "ai_tests", "Utilities"]
 # OR you can use: package-dir = {"" = "."} to search the whole folder
 # but explicitly listing them is usually cleaner.
