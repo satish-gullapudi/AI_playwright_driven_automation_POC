@@ -5,15 +5,20 @@ import pytest
 from playwright.sync_api import sync_playwright
 
 from ai_core.ai_logger import log_info
+from Utilities import utils
 
-@pytest.fixture
+
+def pytest_sessionstart(session):
+    utils.load_env_variables()
+    print("Environment variables loaded at the start of the session.")
+
+@pytest.fixture(scope="function")
 def setup(request):
     """
     Provides a single Playwright page per test. Teardown closes context and browser.
     Use BASE_URL and HEADLESS env vars.
     """
-    root_dir = Path(__file__).resolve().parent.parent
-    video_dir = os.path.join(root_dir, "ai_reports", "VideoReports")
+    video_dir = os.path.join(str(Path.cwd()), "ai_reports", "VideoReports")
     os.makedirs(video_dir, exist_ok=True)
 
     pw = sync_playwright().start()

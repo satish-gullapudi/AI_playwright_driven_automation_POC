@@ -1,18 +1,10 @@
 import google.generativeai as genai
 import os
-from pathlib import Path
-from dotenv import load_dotenv
 
-# --- Load environment variables ---
-root_dir = Path(__file__).resolve().parent.parent.parent
-env_path = os.path.join(root_dir, "secrets.env")
-load_dotenv(dotenv_path=env_path, override=True)
-
-
-genai.configure(api_key=os.getenv("API_KEY"))
 
 # Pick the first "gemini" model that includes "flash" and is not a preview
 def get_latest_gemini_model():
+    genai.configure(api_key=os.getenv("API_KEY"))
     models = [m.name for m in genai.list_models()]
     for preferred in ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash"]:
         if any(preferred in m for m in models):
