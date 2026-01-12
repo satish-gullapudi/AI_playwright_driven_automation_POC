@@ -1,5 +1,6 @@
 import logging
 import os
+import sys
 from pathlib import Path
 from datetime import datetime
 
@@ -12,19 +13,19 @@ logger.setLevel(logging.DEBUG)
 logger.propagate = False
 
 if not logger.handlers:
-    fh = logging.FileHandler(log_file, mode='w')
-    ch = logging.StreamHandler()
+    fh = logging.FileHandler(log_file, mode='w', encoding='utf-8')
+    # ch = logging.StreamHandler()
 
     formatter = logging.Formatter('%(asctime)s [%(levelname)s] (%(name)s) %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(formatter)
 
-    ch.setLevel(logging.INFO)
-    ch.setFormatter(formatter)
+    # ch.setLevel(logging.INFO)
+    # ch.setFormatter(formatter)
 
     logger.addHandler(fh)
-    logger.addHandler(ch)
+    # logger.addHandler(ch)
 
 def log_info(msg: str):
     logger.info(msg)

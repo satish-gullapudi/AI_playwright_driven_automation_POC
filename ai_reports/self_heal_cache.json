@@ -17,5 +17,7 @@
   "div.product-information p": "[class=\"product-information\"] p",
   "\n        const elements = document.evaluate(\"//div[./a[normalize-space()='Add to cart']]//p\", document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);\n        const names = [];\n        for (let i = 0; i < elements.snapshotLength; i++) {\n            names.push(elements.snapshotItem(i).textContent.trim());\n        }\n        return names;\n    ": "div:has(a:text(\"Add to cart\")) p",
   "form:has(input[placeholder='Search Product']) button:has(i.fa.fa-search)": "button#submit_search",
-  "a:has-text('Products')": "//a[contains(., 'Products')]"
+  "a:has-text('Products')": "//a[contains(., 'Products')]",
+  "inputplaceholder=\"Search Product\"": "#search_product",
+  "button#search_product": "#search_product"
 }
