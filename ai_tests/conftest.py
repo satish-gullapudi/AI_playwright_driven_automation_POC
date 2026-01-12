@@ -30,13 +30,13 @@ def setup(request):
 
     context = browser.new_context(**context_opts)
     page = context.new_page()
-    # page.goto(os.environ.get("BASE_URL"))
+    page.goto(os.environ.get("BASE_URL"))
     yield page
     try:
         context.close()
         browser.close()
         pw.stop()
-        log_info("Browser closed")
+        # log_info("Browser closed")
     except Exception as e:
         log_info(f"Error closing browser: {e}")
     finally:
