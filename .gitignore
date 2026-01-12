@@ -3,3 +3,5 @@
 secrets.env
 /Rough/
 /ai_playwright_poc.egg-info/
+/context.py
+/Rough/promptfooconfig.yaml

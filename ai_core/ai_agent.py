@@ -2,6 +2,8 @@ import os
 import re
 import random
 import traceback
+import importlib.util
+from typing import Tuple
 
 import allure
 from allure_commons.types import AttachmentType
@@ -58,6 +60,18 @@ def sanitize_assertions(code: str) -> str:
         return name
 
     code = re.sub(r"\.(to_[a-zA-Z_0-9]+)\s*\(", lambda m: f".{_check_unknown(m)}(", code)
+    code = re.sub(
+        r"expect\(page\.locator\((.+?)\)\)\.to_be_visible\((.+?)\)",
+        r"expect(page.locator(\1)).to_be_visible()",
+        code)
+    code = re.sub(
+        r"to_be_visible\(['\"]placeholder['\"],\s*['\"](.+?)['\"]\)",
+        r"to_have_attribute(\"placeholder\", \"\1\")",
+        code)
+    code = re.sub(
+        r"expect\((.+?)\)\.to_have_count\(lambda.+?\)",
+        r"assert \1.count() > 0",
+        code)
     return code
 
 def fix_try_with_healing_signature(code: str) -> str:
@@ -116,7 +130,7 @@ def validate_final_code(code: str) -> str:
         flags=re.MULTILINE
     )
 
-    # REMOVE ANY IMPORT STATEMENTS — hallucinated modules break execution
+    # REMOVE ANY IMPORT STATEMENTS — hallucinated imports break execution in the agent runtime
     code = re.sub(r"^\s*(import|from)\s+[^\n]+", "", code, flags=re.MULTILINE)
 
     return code
@@ -235,10 +249,19 @@ Important rules:
   expect(locator).to_contain_text("text")
   expect(page).to_have_url("url")
   expect(page).to_have_title("title")
+- Must and should, add comments as below mentioned in case of conditional statements like 'if-else' or 'if-elif' blocks:
+    - # conditional statement begins
+    - # conditional statement ends
+- Must and should, add comments as below mentioned in case of looping statements like 'for' loop:
+    - # loop begins
+    - # loop ends
 - Below is invalid assertion
     expect(page.to_be_visible("input[placeholder='Search Product']")).to_be_visible()
 - Valid assertion is below
     expect(page.locator("input[placeholder='Search Product']")).to_be_visible()
+- Make sure to quote the attributes value in locator to be single quotes, not double quotes:
+    Invalid format - try_with_healing(model, page, page.click, "a[href="/products"]")
+    Valid format - try_with_healing(model, page, page.click, "a[href='/products']")
 - DO NOT invent new assertion method names.
 - If you need to get text contents from many elements, use page.locator("<selector>").all_text_contents()
 - Return ONLY executable Python code (no markdown, no explanation, no comments).
@@ -338,3 +361,142 @@ Note: If the step references the site root, assume base url is {base_url}
                 # re-sanitize after changes
                 code = validate_final_code(code)
             self._wrap_and_execute(code, f"AI Step {i}: {desc}")
+
+    # ----------------------------
+    # New: Generate a source file in ai_tests/src if missing
+    # ----------------------------
+    def generate_source_if_missing(self, test_name: str) -> Tuple[str, bool]:
+        """
+        If ai_tests/src/<test_name>.py doesn't exist, ask the AI model to convert
+        the entire `self.task` into a runnable function and save it there.
+
+        Returns (file_path, created_bool).
+        """
+        # compute src folder: project_root/ai_tests/src
+        project_root = os.path.dirname(os.path.dirname(__file__))  # parent of ai_core/
+        src_dir = os.path.join(project_root, "ai_tests", "src")
+        os.makedirs(src_dir, exist_ok=True)
+
+        safe_name = re.sub(r"[^A-Za-z0-9_]", "_", test_name)
+        file_path = os.path.join(src_dir, f"{safe_name}.py")
+
+        if os.path.exists(file_path):
+            log_info(f"⚡ Source code already exists: {file_path}. Skipping AI generation.")
+            return file_path, False
+        else:
+            log_info(f"🤖 Generating new automation code for {test_name} at {file_path} ...")
+            print(f"🤖 Generating new automation code for {test_name} at {file_path} ...")
+
+            # Craft a conservative prompt: ask for function body only (no imports)
+            # prompt = f"""
+            #     You are an expert Playwright Python automation engineer that writes self-healing Playwright tests.
+            #     Convert the following test case (steps) into Python code suitable for this project's sync Playwright wrappers.
+            #     - ONLY return the function body lines (no imports, no markdown).
+            #     - The resulting file will be wrapped into: def run(page, model): <body>
+            #     - Use only try_with_healing(model, page, page.<action>, "<locator>", [args...]) for actions.
+            #     - Use expect(page.locator("...")).to_be_visible() / to_have_count(n) etc for assertions (allowed ones).
+            #     - If you need to get lists of text use page.locator("...").all_text_contents()
+            #     - Do NOT include 'async' or 'await'.
+            #     - Do NOT include import statements.
+            #     - In case of conditional statements like 'if-else' or 'if-elif' blocks, leave comments before starting and ending the statement as below:
+            #         - # conditional statement begins
+            #         - # conditional statement ends
+            #     - In case of looping statements like 'for' loop, leave comments before starting and ending the loop as below:
+            #         - # loop begins
+            #         - # loop ends
+            #     Here are the test steps to convert:
+            #     {self.task}
+            #     """
+            prompt = self._build_prompt(self.task)
+            try:
+                response = self.model.generate_content(prompt)
+                # print(response)
+                raw = getattr(response, "text", "") or str(response)
+            except Exception as e:
+                log_error(f"[AI] LLM call failed while generating source file: {e}")
+                raw = ""
+
+            code_body = raw.strip().replace("```python", "").replace("```", "").strip()
+            if not code_body:
+                # safe fallback minimal flow
+                code_body = f'try_with_healing(model, page, page.goto, os.environ.get("BASE_URL", "https://example.com"))\n'
+
+                # Sanitize and finalize
+            code_body = validate_final_code(code_body)
+            code_body = fix_try_with_healing_signature(code_body)
+
+            # === BUILD FINAL GENERATED FILE CONTENT ===
+            final_file_content ='import os'
+            final_file_content += '\nimport random'
+            final_file_content += '\nfrom playwright.sync_api import expect'
+            final_file_content += '\nfrom ai_core.ai_self_heal import try_with_healing, heal_locator'
+            final_file_content += '\ndef run(page, model):\n'
+
+            # ---- CRITICAL NORMALIZATION FIX ----
+            clean_lines = []
+            for raw in code_body.splitlines():
+
+                # Remove ALL leading indentation
+                stripped = raw.lstrip()
+
+                # Skip blank lines
+                if not stripped:
+                    continue
+
+                # Fix cases where AI outputs "page.fill(..., [value])"
+                stripped = stripped.replace("[selected_product_name]", "selected_product_name")
+
+                # Fix AI hallucination: arguments must not be lists
+                stripped = stripped.replace("[", "").replace("]", "") \
+                    if "page.fill" in stripped and "selected_product_name" in stripped else stripped
+
+                # Fix invalid expect(...).to_have_count(lambda...)
+                stripped = re.sub(
+                    r"expect\((.+?)\)\.to_have_count\(lambda.+?\)",
+                    r"assert \1.count() > 0",
+                    stripped
+                )
+
+                # Ensure loops are correct
+                if stripped.startswith("for ") and stripped.endswith(":"):
+                    clean_lines.append(stripped)
+                    continue
+
+                clean_lines.append(stripped)
+
+            # ---- APPLY CORRECT INDENTATION ----
+            print(clean_lines)
+            for line in clean_lines:
+                # if statement lines indentation
+                if 'conditional statement begins' in line:
+                    start = clean_lines.index(line)
+                    end = clean_lines.index("# conditional statement ends")
+                    conditional_lines = clean_lines[start:end + 1]
+                    for line_ in conditional_lines:
+                        if line_.startswith("#") or \
+                                (line_.startswith("if ") and line_.endswith(":")) or \
+                                (line_.startswith("else") and line_.endswith(":")):
+                            final_file_content += "    " + line_ + "\n"
+                        else:
+                            final_file_content += "        " + line_ + "\n"
+                        clean_lines.remove(line_)
+
+                # for loop lines indentation
+                elif 'loop begins' in line:
+                    start = clean_lines.index(line)
+                    end = clean_lines.index("# loop ends")
+                    loop_lines = clean_lines[start:end + 1]
+                    for line_ in loop_lines:
+                        if line_.startswith("#") or (line_.startswith("for ") and line_.endswith(":")):
+                            final_file_content += "    " + line_ + "\n"
+                        else:
+                            final_file_content += "        " + line_ + "\n"
+                        clean_lines.remove(line_)
+                else:
+                    # Regular line
+                    final_file_content += "    " + line + "\n"
+
+            # ---- SAVE FILE ----
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(final_file_content)
+            return file_path, True
